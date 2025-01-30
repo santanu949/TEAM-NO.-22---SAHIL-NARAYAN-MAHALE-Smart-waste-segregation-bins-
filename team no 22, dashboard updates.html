@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arduino Sensor Monitor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center justify-center p-6">
+
+    <!-- Header -->
+    <header class="mb-6 text-center">
+        <h1 class="text-3xl font-bold text-green-700">Arduino Sensor Monitor</h1>
+        <p class="text-gray-600">Live data from Moisture & Proximity sensors</p>
+    </header>
+
+    <!-- Main Layout -->
+    <div class="flex w-full max-w-5xl gap-6">
+        
+        <!-- Serial Monitor (Left Side) -->
+        <div class="w-1/2 bg-gray-900 text-white p-4 rounded-lg">
+            <h2 class="text-lg font-semibold">Serial Monitor</h2>
+            <div id="serialMonitor" class="h-40 overflow-y-auto bg-gray-800 p-2 mt-2 rounded text-sm"></div>
+        </div>
+
+        <!-- Graph Section (Right Side) -->
+        <div class="w-1/2 bg-white p-4 rounded-lg shadow-lg">
+            <h2 class="text-lg font-semibold text-gray-800 text-center">Sensor Readings</h2>
+            <canvas id="sensorChart"></canvas>
+        </div>
+
+    </div>
+
+    <!-- Connection Button -->
+    <button id="connectBtn" class="bg-blue-600 text-white px-6 py-2 rounded-lg shadow-md hover:bg-blue-700 transition mt-6">
+        Connect to Arduino
+    </button>
+
+    <!-- Connection Status -->
+    <p id="status" class="mt-4 text-lg text-gray-700">Status: Not Connected ❌</p>
+
+    <!-- Sensor Data Display -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+        <div class="bg-white p-6 rounded-lg shadow-lg text-center">
+            <h2 class="text-xl font-semibold text-gray-800">Moisture Level</h2>
+            <p id="moistureData" class="text-3xl font-bold text-blue-500 mt-3">--</p>
+        </div>
+        <div class="bg-white p-6 rounded-lg shadow-lg text-center">
+            <h2 class="text-xl font-semibold text-gray-800">Proximity Sensor</h2>
+            <p id="proximityData" class="text-3xl font-bold text-green-500 mt-3">--</p>
+        </div>
+    </div>
+
+    <!-- Sensor Data Log -->
+    <div class="mt-6 w-full max-w-2xl">
+        <h2 class="text-lg font-semibold text-gray-800">Sensor Data Log</h2>
+        <table class="w-full border-collapse border border-gray-400 mt-2">
+            <thead>
+                <tr class="bg-gray-200">
+                    <th class="border p-2">Serial No.</th>
+                    <th class="border p-2">Timestamp</th>
+                    <th class="border p-2">Moisture</th>
+                    <th class="border p-2">Proximity</th>
+                </tr>
+            </thead>
+            <tbody id="dataTable">
+                <tr><td colspan="4" class="border p-2 text-center">No Data Yet</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- JavaScript Code -->
+    <script>
+        const connectBtn = document.getElementById('connectBtn');
+        const statusText = document.getElementById('status');
+        const moistureText = document.getElementById('moistureData');
+        const proximityText = document.getElementById('proximityData');
+        const serialMonitor = document.getElementById('serialMonitor');
+        const dataTable = document.getElementById('dataTable');
+
+        let port, reader, buffer = '';
+        let isConnected = false;
+        let serialNumber = 1;
+        let dataCount = 0;
+
+        // Chart.js Initialization
+        const sensorChartCtx = document.getElementById('sensorChart').getContext('2d');
+
+        const sensorChart = new Chart(sensorChartCtx, {
+            type: 'bar',
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'Moisture', data: [], backgroundColor: 'blue' },
+                    { label: 'Proximity', data: [], backgroundColor: 'green' }
+                ]
+            },
+            options: { 
+                responsive: true, 
+                scales: { 
+                    y: { beginAtZero: true, max: 1000 } 
+                } 
+            }
+        });
+
+        async function connectToArduino() {
+            try {
+                // Check for Web Serial API support
+                if (!navigator.serial) {
+                    throw new Error("Web Serial API not supported in this browser.");
+                }
+
+                // Request the port
+                port = await navigator.serial.requestPort();
+                await port.open({ baudRate: 9600 });
+
+                statusText.textContent = "Status: Connected ✅";
+                isConnected = true;
+
+                const textDecoder = new TextDecoderStream();
+                const readableStream = port.readable.pipeThrough(textDecoder);
+                reader = readableStream.getReader();
+
+                readSerialData();
+            } catch (error) {
+                console.error("Serial Connection Error:", error);
+                statusText.textContent = `Status: Connection Failed ❌ - ${error.message}`;
+                isConnected = false;
+            }
+        }
+
+        async function readSerialData() {
+            try {
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    if (value) {
+                        buffer += value;
+                        processSerialData();
+                    }
+                }
+            } catch (error) {
+                console.error("Error reading serial data:", error);
+                statusText.textContent = "Status: Disconnected ❌";
+                isConnected = false;
+            }
+        }
+
+        function processSerialData() {
+            let lines = buffer.split("\n");
+            if (lines.length > 1) {
+                buffer = lines.pop();
+                lines.forEach((line) => {
+                    updateSerialMonitor(line.trim());
+
+                    const moistureMatch = line.match(/moisture=(\d+)/);
+                    const proximityMatch = line.match(/proximity=(\d+)/);
+
+                    if (moistureMatch || proximityMatch) {
+                        let moistureValue = moistureMatch ? parseInt(moistureMatch[1], 10) : 0;
+                        let proximityValue = proximityMatch ? parseInt(proximityMatch[1], 10) : 0;
+
+                        moistureText.textContent = moistureValue;
+                        proximityText.textContent = proximityValue === 1 ? "Object Detected" : "No Object";
+
+                        updateGraph(moistureValue, proximityValue);
+                        logSensorData(moistureValue, proximityValue);
+                    }
+                });
+            }
+        }
+
+        function updateSerialMonitor(data) {
+            const message = document.createElement("p");
+            message.textContent = data;
+            message.className = "text-sm text-gray-300";
+            serialMonitor.appendChild(message);
+            serialMonitor.scrollTop = serialMonitor.scrollHeight;
+        }
+
+        function updateGraph(moisture, proximity) {
+            if (dataCount >= 20) {
+                sensorChart.data.labels = [];
+                sensorChart.data.datasets.forEach((dataset) => dataset.data = []);
+                dataCount = 0;
+            }
+
+            sensorChart.data.labels.push(dataCount);
+            sensorChart.data.datasets[0].data.push(moisture);
+            sensorChart.data.datasets[1].data.push(proximity * 1000);
+            sensorChart.update();
+
+            dataCount++;
+        }
+
+        function logSensorData(moisture, proximity) {
+            // Change condition here from >= 900 to <= 900
+            if (moisture <= 900) {
+                if (serialNumber > 10) {
+                    dataTable.innerHTML = "";
+                    serialNumber = 1;
+                }
+
+                const row = document.createElement("tr");
+                row.innerHTML = `<td class="border p-2">${serialNumber++}</td>
+                                 <td class="border p-2">${new Date().toLocaleTimeString()}</td>
+                                 <td class="border p-2">${moisture}</td>
+                                 <td class="border p-2">${proximity}</td>`;
+                dataTable.appendChild(row);
+            }
+        }
+
+        connectBtn.addEventListener("click", connectToArduino);
+    </script>
+</body>
+</html>
